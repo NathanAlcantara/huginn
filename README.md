@@ -25,7 +25,7 @@ It does **not** try to guess progress. Your command owns the percentage; huginn 
 Install by symlinking from a clone of this repo, so a `git pull` updates the installed copy:
 
 ```bash
-git clone <repo-url> ~/Documents/huginn   # or wherever you keep it
+git clone https://github.com/NathanAlcantara/huginn.git ~/Documents/huginn   # or wherever you keep it
 cd ~/Documents/huginn
 mkdir -p ~/.local/bin
 ln -sf "$PWD/huginn" ~/.local/bin/huginn
