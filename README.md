@@ -39,6 +39,13 @@ mkdir -p ~/.kiro/steering
 ln -sf "$PWD/kiro/steering/huginn.md" ~/.kiro/steering/huginn.md
 ```
 
+Claude Code users: link the skill, so Claude uses huginn for long jobs:
+
+```bash
+mkdir -p ~/.claude/skills
+ln -sfn "$PWD/claude/skills/huginn" ~/.claude/skills/huginn
+```
+
 Edit the files in the repo, not through the links. If you move or delete the repo, the `huginn` command breaks: run the `ln -sf` lines again from the new location.
 
 Make sure `~/.local/bin` is on your `PATH` (most distros add it automatically). Check:
