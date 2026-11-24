@@ -61,7 +61,7 @@ if [[ "${1:-}" == "selftest" ]]; then
   ex=$(sed -n 's/^exit=//p' "${rd%/}/meta" | tail -n1)
   if [[ "$ex" == "0" ]]; then
     echo "PASS: job finished, exit=0, state recorded correctly."
-    echo "If you saw the progress + done popups, huginn works end to end."
+    echo "If you saw the started, progress and done popups, huginn works end to end."
   else
     echo "FAIL: expected exit=0, got exit='$ex'. Inspect ${rd%/}/log"
   fi

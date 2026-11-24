@@ -61,7 +61,7 @@ which huginn
 huginn selftest
 ```
 
-This runs a real ~12-second job that reports progress. Watch your desktop: you should see progress notifications with an ETA, then a final "✅ done" popup. The command also prints `PASS` / `FAIL` for the recorded run state. If `notify-send` or `setsid` are missing, it tells you which.
+This runs a real ~12-second job that reports progress. Watch your desktop: you should see a "started" popup, progress notifications with an ETA, then a final "✅ done" popup. Very short jobs can skip a step (here 90%), because the monitor checks every 2 seconds. The command also prints `PASS` / `FAIL` for the recorded run state. If `notify-send` or `setsid` are missing, it tells you which.
 
 ## Usage
 
