@@ -9,7 +9,7 @@ Pure Bash. No runtime, no daemon, no dependencies beyond standard Linux tools.
 - Runs your command **detached** (`setsid`) so it survives your terminal/session closing.
 - Reads progress that **your command reports** and fires a desktop notification every 15% with an ETA.
 - Sends a final notification when the job finishes: `✅ 100% • done` or `❌ failed exit=N`. (100% is signalled by this final notification, not by a separate progress popup.)
-- Records each run under `~/.hermes/<timestamp>-<slug>/` so you can check results later.
+- Records each run under `~/.local/state/hermes/<timestamp>-<slug>/` so you can check results later.
 
 It does **not** try to guess progress. Your command owns the percentage; hermes just reads it and notifies. If a command reports no progress, hermes falls back to a plain "still running, N min elapsed" ping every 10 minutes (no fake ETA).
 
@@ -22,17 +22,24 @@ It does **not** try to guess progress. Your command owns the percentage; hermes 
 
 ## Install
 
-Copy the `hermes` script somewhere on your `PATH` and make it executable:
+Install by symlinking from a clone of this repo, so a `git pull` updates the installed copy:
 
 ```bash
-install -Dm755 hermes ~/.local/bin/hermes
+git clone <repo-url> ~/Documents/hermes   # or wherever you keep it
+cd ~/Documents/hermes
+mkdir -p ~/.local/bin
+ln -sf "$PWD/hermes" ~/.local/bin/hermes
+ln -sf "$PWD/README.md" ~/.local/bin/hermes.README.md   # optional
 ```
 
-Kiro users: also install the steering file so the agent knows when to use hermes:
+Kiro users: also link the steering file, so the agent knows when and how to use hermes:
 
 ```bash
-install -Dm644 kiro/steering/hermes.md ~/.kiro/steering/hermes.md
+mkdir -p ~/.kiro/steering
+ln -sf "$PWD/kiro/steering/hermes.md" ~/.kiro/steering/hermes.md
 ```
+
+Edit the files in the repo, not through the links. If you move or delete the repo, the `hermes` command breaks: run the `ln -sf` lines again from the new location.
 
 Make sure `~/.local/bin` is on your `PATH` (most distros add it automatically). Check:
 
@@ -68,7 +75,24 @@ hermes prints the PID and a log path and returns immediately — your shell is f
 hermes status
 ```
 
-Lists recent runs with their state (`RUNNING` / `done exit=N` / `dead`) and the log path. The full output of each command is in `~/.hermes/<run>/log`.
+Lists recent runs with their state (`RUNNING` / `done exit=N` / `dead`), the run id and the log path. The full output of each command is in `~/.local/state/hermes/<run>/log`.
+
+### Stop a job
+
+```bash
+hermes stop <run id>
+```
+
+Sends `SIGTERM` to the command and everything it started (its whole process group) and records `exit=stopped`. Pass the run id from `hermes status` or the run directory path. Don't `kill` the pid from `meta` yourself: it is the supervisor, and killing it alone leaves the command running.
+
+### Clean up old runs
+
+```bash
+hermes prune      # delete finished runs older than 30 days
+hermes prune 7    # ... older than 7 days
+```
+
+Running and unfinished runs are never deleted.
 
 ## Make your scripts report progress
 
@@ -104,7 +128,7 @@ for i, item in enumerate(items, 1):
 
 ## Where state lives
 
-Each run creates `~/.hermes/<timestamp>-<slug>/`:
+Each run creates `~/.local/state/hermes/<timestamp>-<slug>/` (`$XDG_STATE_HOME/hermes` if that is set):
 
 - `log` — the command's full stdout + stderr.
 - `meta` — `desc`, `cmd`, `started`, `pid`, `finished`, `exit`, and optional `goal`.
@@ -115,13 +139,13 @@ To tag a run with what you were trying to accomplish, set `HERMES_GOAL`:
 HERMES_GOAL="rebuild search index for release" hermes "reindex" ./reindex.sh
 ```
 
-Old run directories are just folders — delete them whenever you like: `rm -rf ~/.hermes/<run>`.
+Old runs: `hermes prune`, or delete a run folder by hand.
 
 ## Configuration (environment variables)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `HERMES_HOME` | `~/.hermes` | Where run state is stored |
+| `HERMES_HOME` | `~/.local/state/hermes` | Where run state is stored |
 | `HERMES_STEP` | `15` | Notify every N percent |
 | `HERMES_HEARTBEAT_MIN` | `10` | Fallback ping interval (minutes) when no progress is reported |
 | `HERMES_GOAL` | *(unset)* | Free-text goal saved into the run's `meta` |
@@ -137,6 +161,8 @@ Don't use it for interactive commands (they can't prompt you in the background) 
 - Jobs survive your session closing but **not a machine reboot** — there is no auto-restart. For durable, restartable jobs, use a real supervisor like a systemd user unit.
 - The monitor polls the log every 2 seconds, so a job that races through milestones in a few seconds may skip some 15% notifications. For real multi-minute jobs this never matters.
 - ETA assumes progress is roughly linear in time; a job that stalls then sprints will show a rough estimate.
+- `hermes stop` sends only `SIGTERM`. A command that ignores it keeps running; kill it by hand.
+- The name `hermes` is also used by the Nous Research Hermes AI agent. Don't install both on the same `PATH`, and don't enable oh-my-zsh's `hermes` plugin: it runs `hermes completion zsh` on every new shell, which with this script launches a job. Run state lives outside `~/.hermes` so the two never share a folder.
 
 ## How it works (internals)
 

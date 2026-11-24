@@ -5,6 +5,8 @@
 # Usage:
 #   hermes "<description>" <command> [args...]      # launch detached, return immediately
 #   hermes status                                    # list recent runs + their state
+#   hermes stop <run id|run dir>                     # SIGTERM the command and its children
+#   hermes prune [days]                              # delete finished runs older than days (30)
 #   hermes --monitor <run_dir>                       # internal: progress watcher (do not call)
 #
 # Progress contract: the command SHOULD print lines on stdout of the form
@@ -12,14 +14,15 @@
 # hermes is dumb: the command owns the percent. If no PROGRESS is ever seen,
 # hermes falls back to a time heartbeat every HEARTBEAT_MIN minutes (no fake ETA).
 #
-# State per run lives in ~/.hermes/<timestamp>-<slug>/ :
+# State per run lives in $HERMES_HOME/<timestamp>-<slug>/ (default ~/.local/state/hermes):
 #   log   — combined stdout+stderr of the command
 #   meta  — key=value: desc, cmd, pid, started, finished, exit, goal
 # Loop is MANUAL: when you return, run `hermes status` (or read meta/log) to resume.
 
 set -euo pipefail
 
-HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+# Not ~/.hermes: the Nous Research Hermes agent owns that folder.
+HERMES_HOME="${HERMES_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/hermes}"
 STEP="${HERMES_STEP:-15}"            # notify every STEP percent
 HEARTBEAT_MIN="${HERMES_HEARTBEAT_MIN:-10}"  # fallback ping when no PROGRESS
 
@@ -82,8 +85,47 @@ if [[ "${1:-}" == "status" ]]; then
     else
       state="dead (no finish recorded)"
     fi
-    printf '%s\n  %s\n  log: %s/log\n' "$desc" "$state" "$d"
+    printf '%s\n  %s\n  id: %s\n  log: %s/log\n' "$desc" "$state" "${d##*/}" "$d"
   done
+  exit 0
+fi
+
+# ---------- stop subcommand ----------
+if [[ "${1:-}" == "stop" ]]; then
+  [[ -n "${2:-}" ]] || { echo "usage: hermes stop <run id|run dir>" >&2; exit 2; }
+  rd="${2%/}"; [[ -d "$rd" ]] || rd="$HERMES_HOME/$rd"
+  [[ -f "$rd/meta" ]] || { echo "hermes: no run at $rd" >&2; exit 1; }
+  [[ -z "$(meta_get "$rd" finished)" ]] || { echo "hermes: run already finished"; exit 0; }
+  pid=$(meta_get "$rd" pid)
+  # Guard against pid reuse (e.g. after a reboot): the supervisor's argv is
+  # exactly: bash -c <script> _ <run dir> <command...>
+  args=()
+  [[ -n "$pid" ]] && mapfile -d '' args <"/proc/$pid/cmdline" 2>/dev/null || true
+  if [[ "${args[3]:-}" != "_" || "${args[4]:-}" != */"${rd##*/}" ]]; then
+    echo "hermes: run is not running (dead)" >&2; exit 1
+  fi
+  # setsid made the supervisor a process-group leader: -pid hits it and the command.
+  kill -TERM -- "-$pid"
+  meta_set "$rd" finished "$(now)"
+  meta_set "$rd" exit stopped
+  echo "hermes stopped: $(meta_get "$rd" desc)"
+  exit 0
+fi
+
+# ---------- prune subcommand ----------
+if [[ "${1:-}" == "prune" ]]; then
+  days="${2:-30}"
+  [[ "$days" =~ ^[0-9]+$ ]] || { echo "usage: hermes prune [days]" >&2; exit 2; }
+  cutoff=$(( $(now) - days * 86400 ))
+  shopt -s nullglob; n=0
+  for d in "$HERMES_HOME"/*/; do
+    d=${d%/}
+    [[ -f "$d/meta" ]] || continue
+    fin=$(meta_get "$d" finished)
+    [[ -n "$fin" ]] && (( fin < cutoff )) || continue  # never touch running/unfinished runs
+    rm -rf -- "$d"; n=$((n + 1))
+  done
+  echo "hermes: pruned $n finished run(s) older than $days days"
   exit 0
 fi
 
@@ -149,6 +191,8 @@ fi
 if (( $# < 2 )); then
   echo "usage: hermes \"<description>\" <command> [args...]" >&2
   echo "       hermes status" >&2
+  echo "       hermes stop <run id|run dir>" >&2
+  echo "       hermes prune [days]" >&2
   echo "       hermes selftest" >&2
   exit 2
 fi
