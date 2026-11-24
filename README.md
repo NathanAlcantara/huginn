@@ -28,6 +28,12 @@ Copy the `hermes` script somewhere on your `PATH` and make it executable:
 install -Dm755 hermes ~/.local/bin/hermes
 ```
 
+Kiro users: also install the steering file so the agent knows when to use hermes:
+
+```bash
+install -Dm644 kiro/steering/hermes.md ~/.kiro/steering/hermes.md
+```
+
 Make sure `~/.local/bin` is on your `PATH` (most distros add it automatically). Check:
 
 ```bash

@@ -71,6 +71,7 @@ if [[ "${1:-}" == "status" ]]; then
   if (( ${#runs[@]} == 0 )); then echo "no hermes runs in $HERMES_HOME"; exit 0; fi
   for d in "${runs[@]}"; do
     d=${d%/}
+    [[ -f "$d/meta" ]] || continue  # skip non-run dirs (e.g. ~/.hermes/skills)
     desc=$(meta_get "$d" desc); pid=$(meta_get "$d" pid)
     fin=$(meta_get "$d" finished); ex=$(meta_get "$d" exit)
     start=$(meta_get "$d" started)
@@ -128,8 +129,13 @@ if [[ "${1:-}" == "--monitor" ]]; then
   done
 
   # Command finished. Reap exit code written by the launcher.
-  while [[ -z "$(meta_get "$rd" exit)" ]]; do sleep 0.3; done
+  # Supervisor writes exit just before it dies; if it was killed, exit never comes.
+  for _ in {1..20}; do [[ -n "$(meta_get "$rd" exit)" ]] && break; sleep 0.3; done
   ex=$(meta_get "$rd" exit)
+  if [[ -z "$ex" ]]; then
+    notify critical "❌ hermes: $desc" "killed (no exit recorded)"
+    exit 0
+  fi
   total=$(human_dur $(( $(meta_get "$rd" finished) - start )))
   if [[ "$ex" == "0" ]]; then
     notify critical "✅ hermes: $desc" "100% • done ($total)"
