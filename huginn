@@ -46,15 +46,18 @@ if [[ "${1:-}" == "selftest" ]]; then
   command -v notify-send >/dev/null || { echo "FAIL: notify-send not found (install libnotify-bin)"; exit 1; }
   command -v setsid     >/dev/null || { echo "FAIL: setsid not found (install util-linux)"; exit 1; }
   echo "huginn selftest: launching a 12s job that reports PROGRESS."
-  echo "Watch your desktop. Expect notifications near 15/30/45/60/75/90% with an ETA,"
+  echo "Watch your desktop. Expect a 'started' popup, then progress near every 15% with an ETA,"
   echo "then a final '✅ ... done' popup. Verifying state afterwards..."
   td=$(mktemp -d)
   export HUGINN_HOME="$td/home"
   "$0" "huginn selftest" bash -c '
     for p in $(seq 0 5 100); do echo "PROGRESS $p tick $p"; sleep 0.6; done
   ' >/dev/null
-  sleep 14
   rd=$(printf '%s\n' "$HUGINN_HOME"/*/ | head -n1)
+  # Wait for the monitor itself to exit: deleting the run dir under it
+  # kills it before the final "done" notification.
+  mon=$(sed -n 's/^monitor_pid=//p' "${rd%/}/meta" | tail -n1)
+  for _ in {1..60}; do kill -0 "$mon" 2>/dev/null || break; sleep 0.5; done
   ex=$(sed -n 's/^exit=//p' "${rd%/}/meta" | tail -n1)
   if [[ "$ex" == "0" ]]; then
     echo "PASS: job finished, exit=0, state recorded correctly."
@@ -230,6 +233,7 @@ cmd_pid=$!
 meta_set "$rd" pid "$cmd_pid"
 
 setsid bash "$0" --monitor "$rd" >/dev/null 2>&1 &
+meta_set "$rd" monitor_pid "$!"
 
 echo "huginn launched: $desc"
 echo "  pid: $cmd_pid"
