@@ -139,6 +139,8 @@ if [[ "${1:-}" == "--monitor" ]]; then
   d=$(meta_get "$rd" dbus);        [[ -n "$d" ]] && export DBUS_SESSION_BUS_ADDRESS="$d"
   d=$(meta_get "$rd" display);     [[ -n "$d" ]] && export DISPLAY="$d"
   d=$(meta_get "$rd" xdg_runtime); [[ -n "$d" ]] && export XDG_RUNTIME_DIR="$d"
+  # Sent from here, not the launcher, so it proves the monitor can reach the desktop.
+  notify low "🐦‍⬛ huginn: $desc" "started • ${rd##*/}"
   last_bucket=0
   last_beat=$(now)
   saw_progress=0

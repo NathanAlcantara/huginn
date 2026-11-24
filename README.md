@@ -7,6 +7,7 @@ Pure Bash. No runtime, no daemon, no dependencies beyond standard Linux tools.
 ## What it does
 
 - Runs your command **detached** (`setsid`) so it survives your terminal/session closing.
+- Sends a low-urgency "started" notification, which also confirms notifications reach your desktop.
 - Reads progress that **your command reports** and fires a desktop notification every 15% with an ETA.
 - Sends a final notification when the job finishes: `✅ 100% • done` or `❌ failed exit=N`. (100% is signalled by this final notification, not by a separate progress popup.)
 - Records each run under `~/.local/state/huginn/<timestamp>-<slug>/` so you can check results later.
