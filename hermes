@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# hermes — run a long command in the background, notify GNOME every 15% with ETA.
+# Greek messenger: runs far, comes back with news. Pure bash + coreutils + notify-send + setsid.
+#
+# Usage:
+#   hermes "<description>" <command> [args...]      # launch detached, return immediately
+#   hermes status                                    # list recent runs + their state
+#   hermes --monitor <run_dir>                       # internal: progress watcher (do not call)
+#
+# Progress contract: the command SHOULD print lines on stdout of the form
+#   PROGRESS <0-100> [optional message]
+# hermes is dumb: the command owns the percent. If no PROGRESS is ever seen,
+# hermes falls back to a time heartbeat every HEARTBEAT_MIN minutes (no fake ETA).
+#
+# State per run lives in ~/.hermes/<timestamp>-<slug>/ :
+#   log   — combined stdout+stderr of the command
+#   meta  — key=value: desc, cmd, pid, started, finished, exit, goal
+# Loop is MANUAL: when you return, run `hermes status` (or read meta/log) to resume.
+
+set -euo pipefail
+
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+STEP="${HERMES_STEP:-15}"            # notify every STEP percent
+HEARTBEAT_MIN="${HERMES_HEARTBEAT_MIN:-10}"  # fallback ping when no PROGRESS
+
+now()      { date +%s; }
+human_dur() {  # seconds -> "Xmin" / "Xh Ymin" / "Xs"
+  local s=$1
+  if   (( s < 60 ));   then echo "${s}s"
+  elif (( s < 3600 )); then echo "$(( s / 60 ))min"
+  else echo "$(( s / 3600 ))h $(( (s % 3600) / 60 ))min"
+  fi
+}
+notify() {  # urgency summary body
+  notify-send -a hermes -u "$1" "$2" "${3:-}" 2>/dev/null || true
+}
+meta_set() { printf '%s=%s\n' "$2" "$3" >>"$1/meta"; }
+meta_get() { sed -n "s/^$2=//p" "$1/meta" | tail -n1; }
+
+# ---------- selftest subcommand ----------
+# Runs a real ~12s job that emits PROGRESS, so you watch the actual GNOME
+# notifications fire on your desktop and confirm percent + ETA are right.
+if [[ "${1:-}" == "selftest" ]]; then
+  command -v notify-send >/dev/null || { echo "FAIL: notify-send not found (install libnotify-bin)"; exit 1; }
+  command -v setsid     >/dev/null || { echo "FAIL: setsid not found (install util-linux)"; exit 1; }
+  echo "hermes selftest: launching a 12s job that reports PROGRESS."
+  echo "Watch your desktop. Expect notifications near 15/30/45/60/75/90% with an ETA,"
+  echo "then a final '✅ ... done' popup. Verifying state afterwards..."
+  td=$(mktemp -d)
+  export HERMES_HOME="$td/home"
+  "$0" "hermes selftest" bash -c '
+    for p in $(seq 0 5 100); do echo "PROGRESS $p tick $p"; sleep 0.6; done
+  ' >/dev/null
+  sleep 14
+  rd=$(printf '%s\n' "$HERMES_HOME"/*/ | head -n1)
+  ex=$(sed -n 's/^exit=//p' "${rd%/}/meta" | tail -n1)
+  if [[ "$ex" == "0" ]]; then
+    echo "PASS: job finished, exit=0, state recorded correctly."
+    echo "If you saw the progress + done popups, hermes works end to end."
+  else
+    echo "FAIL: expected exit=0, got exit='$ex'. Inspect ${rd%/}/log"
+  fi
+  rm -rf "$td"
+  exit 0
+fi
+
+# ---------- status subcommand ----------
+if [[ "${1:-}" == "status" ]]; then
+  shopt -s nullglob
+  runs=("$HERMES_HOME"/*/)
+  if (( ${#runs[@]} == 0 )); then echo "no hermes runs in $HERMES_HOME"; exit 0; fi
+  for d in "${runs[@]}"; do
+    d=${d%/}
+    desc=$(meta_get "$d" desc); pid=$(meta_get "$d" pid)
+    fin=$(meta_get "$d" finished); ex=$(meta_get "$d" exit)
+    start=$(meta_get "$d" started)
+    if [[ -n "$fin" ]]; then
+      state="done exit=$ex ($(human_dur $(( fin - start ))))"
+    elif [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      state="RUNNING ($(human_dur $(( $(now) - start )) ) elapsed)"
+    else
+      state="dead (no finish recorded)"
+    fi
+    printf '%s\n  %s\n  log: %s/log\n' "$desc" "$state" "$d"
+  done
+  exit 0
+fi
+
+# ---------- internal monitor ----------
+if [[ "${1:-}" == "--monitor" ]]; then
+  rd="$2"
+  desc=$(meta_get "$rd" desc)
+  cmd_pid=$(meta_get "$rd" pid)
+  start=$(meta_get "$rd" started)
+  # Restore the session bus captured at launch so notify-send reaches the
+  # desktop even though this monitor is a detached orphan.
+  d=$(meta_get "$rd" dbus);        [[ -n "$d" ]] && export DBUS_SESSION_BUS_ADDRESS="$d"
+  d=$(meta_get "$rd" display);     [[ -n "$d" ]] && export DISPLAY="$d"
+  d=$(meta_get "$rd" xdg_runtime); [[ -n "$d" ]] && export XDG_RUNTIME_DIR="$d"
+  last_bucket=0
+  last_beat=$(now)
+  saw_progress=0
+
+  # Follow the log until the command process exits, then one final drain.
+  while kill -0 "$cmd_pid" 2>/dev/null; do
+    # Latest PROGRESS line, if any.
+    pct=$(grep -aoE '^PROGRESS[[:space:]]+[0-9]+' "$rd/log" 2>/dev/null | tail -n1 | grep -oE '[0-9]+$' || true)
+    if [[ -n "$pct" ]]; then
+      saw_progress=1
+      (( pct > 100 )) && pct=100
+      bucket=$(( pct / STEP ))
+      if (( bucket > last_bucket && pct < 100 )); then
+        last_bucket=$bucket
+        elapsed=$(( $(now) - start ))
+        if (( pct > 0 )); then
+          eta=$(( elapsed * (100 - pct) / pct ))
+          notify normal "hermes: $desc" "${pct}% • ETA $(human_dur $eta)"
+        fi
+        last_beat=$(now)
+      fi
+    fi
+    # Time heartbeat only while no progress contract is in use.
+    if (( saw_progress == 0 )) && (( $(now) - last_beat >= HEARTBEAT_MIN * 60 )); then
+      notify normal "hermes: $desc" "running • $(human_dur $(( $(now) - start ))) elapsed"
+      last_beat=$(now)
+    fi
+    sleep 2
+  done
+
+  # Command finished. Reap exit code written by the launcher.
+  while [[ -z "$(meta_get "$rd" exit)" ]]; do sleep 0.3; done
+  ex=$(meta_get "$rd" exit)
+  total=$(human_dur $(( $(meta_get "$rd" finished) - start )))
+  if [[ "$ex" == "0" ]]; then
+    notify critical "✅ hermes: $desc" "100% • done ($total)"
+  else
+    notify critical "❌ hermes: $desc" "failed exit=$ex ($total)"
+  fi
+  exit 0
+fi
+
+# ---------- launcher (default) ----------
+if (( $# < 2 )); then
+  echo "usage: hermes \"<description>\" <command> [args...]" >&2
+  echo "       hermes status" >&2
+  echo "       hermes selftest" >&2
+  exit 2
+fi
+desc="$1"; shift
+[[ -n "$desc" ]] || { echo "hermes: empty description" >&2; exit 2; }
+
+slug=$(printf '%s' "$desc" | tr -c 'A-Za-z0-9' '-' | tr -s '-' | sed 's/^-//;s/-$//' | cut -c1-40)
+rd="$HERMES_HOME/$(date +%Y%m%d-%H%M%S)-${slug:-run}"
+mkdir -p "$rd"
+: >"$rd/meta"
+meta_set "$rd" desc "$desc"
+meta_set "$rd" cmd "$*"
+meta_set "$rd" started "$(now)"
+# Capture the session bus + display NOW, while they exist. The monitor runs
+# detached via setsid and outlives this process; once the parent dies an
+# orphaned process loses these and notify-send fails silently (autolaunch
+# D-Bus without $DISPLAY). Persist them so the monitor always reaches the bus.
+[[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]] && meta_set "$rd" dbus "$DBUS_SESSION_BUS_ADDRESS"
+[[ -n "${DISPLAY:-}" ]]                  && meta_set "$rd" display "$DISPLAY"
+[[ -n "${XDG_RUNTIME_DIR:-}" ]]          && meta_set "$rd" xdg_runtime "$XDG_RUNTIME_DIR"
+[[ -n "${HERMES_GOAL:-}" ]] && meta_set "$rd" goal "$HERMES_GOAL"
+
+# Run the command detached in its own session so it survives the Kiro session.
+# A tiny supervisor records the exit code + finish time into meta, then the
+# monitor (also detached) turns that into the final notification.
+setsid bash -c '
+  rd="$1"; shift
+  "$@" >>"$rd/log" 2>&1
+  ex=$?
+  printf "finished=%s\n" "$(date +%s)" >>"$rd/meta"
+  printf "exit=%s\n" "$ex" >>"$rd/meta"
+' _ "$rd" "$@" >/dev/null 2>&1 &
+cmd_pid=$!
+meta_set "$rd" pid "$cmd_pid"
+
+setsid bash "$0" --monitor "$rd" >/dev/null 2>&1 &
+
+echo "hermes launched: $desc"
+echo "  pid: $cmd_pid"
+echo "  log: $rd/log"
+echo "  check later: hermes status"
